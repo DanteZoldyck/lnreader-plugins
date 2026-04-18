@@ -8,7 +8,7 @@ class MangaTR implements Plugin.PluginBase {
   name = 'MangaTR';
   icon = 'src/tr/mangatr/icon.png';
   site = 'https://manga-tr.com/';
-  version = '1.0.2';
+  version = '1.0.3';
 
   opts = {
     method: 'POST',
