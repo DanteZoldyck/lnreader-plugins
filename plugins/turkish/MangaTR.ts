@@ -8,10 +8,10 @@ class MangaTR implements Plugin.PluginBase {
   name = 'MangaTR';
   icon = 'src/tr/mangatr/icon.png';
   site = 'https://manga-tr.com/';
-  version = '1.0.3';
+  version = '1.0.4';
 
   opts = {
-    method: 'POST',
+    method: 'POST' as const,
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
       'x-requested-with': 'XMLHttpRequest',
@@ -47,9 +47,9 @@ class MangaTR implements Plugin.PluginBase {
     const lastPage = parseInt(page1('a[title="Last"]').first().attr('data-page') ?? '1');
 
     let pageDatas = await Promise.all(
-      Array.from({ length: lastPage - firstPage }, (_, i) => {
-        return fetchApi(url, { ...this.opts, body: `page=${firstPage + i + 1}` }).then(r => r.text());
-      }),
+      Array.from({ length: lastPage - firstPage }, (_, i) =>
+        fetchApi(url, { ...this.opts, body: `page=${firstPage + i + 1}` }).then(r => r.text())
+      )
     ).then(pages => pages.map(p => parseHTML(p)));
 
     pageDatas = [page1, ...pageDatas];
@@ -76,28 +76,41 @@ class MangaTR implements Plugin.PluginBase {
     return novel;
   }
 
-  popularNovels(pageNo: number, { showLatestNovels, filters }: Plugin.PopularNovelsOptions<Filters>): Promise<Plugin.NovelItem[]> {
+  async popularNovels(
+    pageNo: number,
+    { showLatestNovels, filters }: Plugin.PopularNovelsOptions<Filters>
+  ): Promise<Plugin.NovelItem[]> {
     const params = new URLSearchParams();
-    params.append('page', pageNo.toString());
-    if (showLatestNovels == true) {
+    params.append('sayfa', pageNo.toString());
+    params.append('icerik', '2');
+    if (showLatestNovels) {
       params.append('sort', 'last_update');
       params.append('sort_type', 'DESC');
     } else {
       params.append('durum', filters.status.value.toString());
-      params.append('ceviri', '');
-      params.append('yas', filters.age.value.toString());
-      params.append('icerik', '2');
       params.append('tur', filters.genre.value.toString());
       params.append('sort', filters.sort.value.toString());
       params.append('sort_type', filters.sort_type.value.toString());
     }
+
     const url = `${this.site}manga-list-sayfala.html?${params.toString()}`;
+
     return fetchApi(url).then(r => r.text()).then(body => {
       const loadedCheerio = parseHTML(body);
-      return loadedCheerio('#myCarousel > div.container > div:nth-child(3) > div.col-lg-9.col-md-8 > div.col-md-12').map((_, el) => {
-        const novel = loadedCheerio(el);
-        return { name: novel.find('#tables').text(), path: novel.find('#tables > a').attr('href') ?? '', cover: novel.find('img.img-thumb').first().attr('src') ?? '' };
-      }).toArray();
+      const novels: Plugin.NovelItem[] = [];
+
+      loadedCheerio('div.col-md-12, .manga-item').each((_, el) => {
+        const item = loadedCheerio(el);
+        const link = item.find('a[href*="manga-"]').first();
+        const name = item.find('#tables, .title, h5').first().text().trim() || link.text().trim();
+        const path = link.attr('href') ?? '';
+        const cover = item.find('img').first().attr('src') ?? '';
+        if (name && path) {
+          novels.push({ name, path, cover });
+        }
+      });
+
+      return novels;
     });
   }
 
@@ -109,42 +122,102 @@ class MangaTR implements Plugin.PluginBase {
 
   async searchNovels(searchTerm: string, pageNo: number): Promise<Plugin.NovelItem[]> {
     const ITEMS_PER_PAGE = 50;
-    const params = new URLSearchParams();
-    params.append('icerik', searchTerm);
-    const url = `${this.site}arama.html?${params.toString()}`;
+    const url = `${this.site}arama.html?icerik=${encodeURIComponent(searchTerm)}`;
+
     return fetchApi(url).then(r => r.text()).then(async body => {
       const loadedCheerio = parseHTML(body);
       const novels: Plugin.NovelItem[] = [];
       let curr = 0;
+
       for (const el of loadedCheerio('div.char > a + span').toArray()) {
         if (novels.length === ITEMS_PER_PAGE) break;
-        if (loadedCheerio(el).text().trim().toLowerCase() != 'novel' && loadedCheerio(el).next().text().trim().toLowerCase() != 'novel') continue;
+        const typeText = loadedCheerio(el).text().trim().toLowerCase();
+        const nextText = loadedCheerio(el).next().text().trim().toLowerCase();
+        if (typeText !== 'novel' && nextText !== 'novel') continue;
         if ((pageNo - 1) * ITEMS_PER_PAGE > curr) { curr++; continue; }
+
         const novelCheerio = loadedCheerio(el).prev();
         const mangaSlug = novelCheerio.attr('manga-slug') ?? '';
-        novels.push({ name: novelCheerio.text(), path: novelCheerio.attr('href') ?? '', cover: mangaSlug });
+        novels.push({
+          name: novelCheerio.text(),
+          path: novelCheerio.attr('href') ?? '',
+          cover: mangaSlug,
+        });
       }
+
       return await Promise.all(novels.map(async novel => {
-        const url = `${this.site}app/manga/controllers/cont.pop.php`;
-        const response = await fetchApi(url, { ...this.opts, body: `slug=${novel.cover}` });
-        const body = await response.text();
-        const imgCheerio = parseHTML(body);
-        novel.cover = imgCheerio('img').first().attr('src');
+        const response = await fetchApi(`${this.site}app/manga/controllers/cont.pop.php`, {
+          ...this.opts,
+          body: `slug=${novel.cover}`,
+        });
+        const imgCheerio = parseHTML(await response.text());
+        novel.cover = imgCheerio('img').first().attr('src') ?? '';
         return novel;
       }));
     });
   }
 
-  resolveUrl(path: string, isNovel?: boolean): string {
+  resolveUrl(path: string): string {
     return this.site + path;
   }
 
   filters = {
-    sort: { value: 'views', label: 'Sırala', options: [{ label: 'Adı', value: 'name' }, { label: 'Popülarite', value: 'views' }, { label: 'Son Güncelleme', value: 'last_update' }], type: FilterTypes.Picker },
-    sort_type: { value: 'DESC', label: 'Sırala Türü', options: [{ label: 'ASC', value: 'ASC' }, { label: 'DESC', value: 'DESC' }], type: FilterTypes.Picker },
-    status: { value: '', label: 'Durum', options: [{ label: 'Hepsi', value: '' }, { label: 'Tamamlanan', value: '1' }, { label: 'Devam Eden', value: '2' }], type: FilterTypes.Picker },
-    age: { value: '', label: 'Yas', options: [{ label: 'Hepsi', value: '' }, { label: '+16', value: '16' }, { label: '+18', value: '18' }], type: FilterTypes.Picker },
-    genre: { value: '', label: 'Tür', options: [{ label: 'Hepsi', value: '' }, { label: 'Action', value: 'Action' }, { label: 'Adventure', value: 'Adventure' }, { label: 'Comedy', value: 'Comedy' }, { label: 'Drama', value: 'Drama' }, { label: 'Fantasy', value: 'Fantasy' }, { label: 'Horror', value: 'Horror' }, { label: 'Romance', value: 'Romance' }, { label: 'Shounen', value: 'Shounen' }], type: FilterTypes.Picker },
+    sort: {
+      value: 'views',
+      label: 'Sırala',
+      options: [
+        { label: 'Adı', value: 'name' },
+        { label: 'Popülarite', value: 'views' },
+        { label: 'Son Güncelleme', value: 'last_update' },
+      ],
+      type: FilterTypes.Picker,
+    },
+    sort_type: {
+      value: 'DESC',
+      label: 'Sırala Türü',
+      options: [
+        { label: 'Artan', value: 'ASC' },
+        { label: 'Azalan', value: 'DESC' },
+      ],
+      type: FilterTypes.Picker,
+    },
+    status: {
+      value: '',
+      label: 'Durum',
+      options: [
+        { label: 'Hepsi', value: '' },
+        { label: 'Tamamlanan', value: '1' },
+        { label: 'Devam Eden', value: '2' },
+      ],
+      type: FilterTypes.Picker,
+    },
+    age: {
+      value: '',
+      label: 'Yaş',
+      options: [
+        { label: 'Hepsi', value: '' },
+        { label: '+16', value: '16' },
+        { label: '+18', value: '18' },
+      ],
+      type: FilterTypes.Picker,
+    },
+    genre: {
+      value: '',
+      label: 'Tür',
+      options: [
+        { label: 'Hepsi', value: '' },
+        { label: 'Action', value: 'Action' },
+        { label: 'Adventure', value: 'Adventure' },
+        { label: 'Comedy', value: 'Comedy' },
+        { label: 'Drama', value: 'Drama' },
+        { label: 'Fantasy', value: 'Fantasy' },
+        { label: 'Horror', value: 'Horror' },
+        { label: 'Isekai', value: 'Isekai' },
+        { label: 'Romance', value: 'Romance' },
+        { label: 'Shounen', value: 'Shounen' },
+      ],
+      type: FilterTypes.Picker,
+    },
   } satisfies Filters;
 }
 
