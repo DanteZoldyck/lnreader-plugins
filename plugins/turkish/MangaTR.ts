@@ -8,7 +8,7 @@ class MangaTR implements Plugin.PluginBase {
   name = 'MangaTR';
   icon = 'src/tr/mangatr/icon.png';
   site = 'https://manga-tr.com/';
-  version = '1.0.5';
+  version = '1.0.6';
 
   opts = {
     method: 'POST' as const,
@@ -82,6 +82,7 @@ class MangaTR implements Plugin.PluginBase {
     const params = new URLSearchParams();
     params.append('sayfa', pageNo.toString());
     params.append('icerik', '2');
+    params.append('listType', 'pagination');
     if (showLatestNovels) {
       params.append('sort', 'last_update');
       params.append('sort_type', 'DESC');
@@ -98,13 +99,13 @@ class MangaTR implements Plugin.PluginBase {
       const loadedCheerio = parseHTML(body);
       const novels: Plugin.NovelItem[] = [];
 
-      loadedCheerio('.archive-item, .serie-item, article').each((_, el) => {
+      loadedCheerio('div.media-card').each((_, el) => {
         const item = loadedCheerio(el);
-        const link = item.find('a').first();
-        const name = item.find('h2, h3, .title').first().text().trim() || link.attr('title') || '';
-        const path = link.attr('href') ?? '';
-        const cover = item.find('img').first().attr('src') ?? '';
-        if (name && path && path.includes('manga-')) {
+        const titleLink = item.find('a.media-card__title');
+        const name = titleLink.text().trim();
+        const path = titleLink.attr('href') ?? '';
+        const cover = item.find('img.media-card__cover').attr('src') ?? '';
+        if (name && path) {
           novels.push({ name, path, cover });
         }
       });
@@ -134,7 +135,6 @@ class MangaTR implements Plugin.PluginBase {
         const nextText = loadedCheerio(el).next().text().trim().toLowerCase();
         if (typeText !== 'novel' && nextText !== 'novel') continue;
         if ((pageNo - 1) * ITEMS_PER_PAGE > curr) { curr++; continue; }
-
         const novelCheerio = loadedCheerio(el).prev();
         const mangaSlug = novelCheerio.attr('manga-slug') ?? '';
         novels.push({
@@ -162,7 +162,7 @@ class MangaTR implements Plugin.PluginBase {
 
   filters = {
     sort: {
-      value: 'views',
+      value: 'last_update',
       label: 'Sırala',
       options: [
         { label: 'Adı', value: 'name' },
@@ -190,16 +190,6 @@ class MangaTR implements Plugin.PluginBase {
       ],
       type: FilterTypes.Picker,
     },
-    age: {
-      value: '',
-      label: 'Yaş',
-      options: [
-        { label: 'Hepsi', value: '' },
-        { label: '+16', value: '16' },
-        { label: '+18', value: '18' },
-      ],
-      type: FilterTypes.Picker,
-    },
     genre: {
       value: '',
       label: 'Tür',
@@ -214,6 +204,7 @@ class MangaTR implements Plugin.PluginBase {
         { label: 'Isekai', value: 'Isekai' },
         { label: 'Romance', value: 'Romance' },
         { label: 'Shounen', value: 'Shounen' },
+        { label: 'Türkçe Novel', value: 'Türkçe Novel' },
       ],
       type: FilterTypes.Picker,
     },
