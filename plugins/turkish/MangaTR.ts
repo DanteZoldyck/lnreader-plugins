@@ -8,7 +8,7 @@ class MangaTR implements Plugin.PluginBase {
   name = 'MangaTR';
   icon = 'src/tr/mangatr/icon.png';
   site = 'https://manga-tr.com/';
-  version = '1.0.6';
+  version = '1.0.7';
 
   opts = {
     method: 'POST' as const,
@@ -19,60 +19,103 @@ class MangaTR implements Plugin.PluginBase {
   };
 
   async parseNovel(novelPath: string): Promise<Plugin.SourceNovel> {
-    const body = await fetchApi(this.site + novelPath).then(r => r.text());
+    const url = this.site + novelPath;
+    const body = await fetchApi(url).then(r => r.text());
     const loadedCheerio = parseHTML(body);
 
-    const novel: Plugin.SourceNovel = {
-      path: novelPath,
-      name: loadedCheerio('#tables').text(),
-      cover: loadedCheerio('#myCarousel > div.container > div.col-lg-4.col-sm-4 > img').attr('src'),
-      status: loadedCheerio('#tab1 > table:nth-child(2) > tbody > tr:nth-child(2) > td:nth-last-child(2) > a').text(),
-      chapters: [],
-      author: loadedCheerio('#tab1 > table:nth-child(3) > tbody > tr:nth-child(2) > td:nth-child(1) > a').map((i, el) => loadedCheerio(el).text()).get().join(','),
-      genres: loadedCheerio('#tab1 > table:nth-child(3) > tbody > tr:nth-child(2) > td:nth-child(3) > a').map((i, el) => loadedCheerio(el).text()).get().join(','),
-    };
+    // Başlık
+    const name = loadedCheerio('h1').first().text().replace(/\(\d+\)/, '').trim() ||
+      loadedCheerio('.poster-card__title').first().text().trim();
 
-    const summary = loadedCheerio('#tab1 > div.well');
-    summary.children().remove('h3, div');
-    novel.summary = summary.text().trim();
+    // Kapak
+    const cover = loadedCheerio('.poster-card__image').first().attr('src') || '';
+
+    // Açıklama
+    const summary = loadedCheerio('#manga-description').text().trim();
+
+    // Yazar
+    const author = loadedCheerio('.detail-inline-actions .chip')
+      .filter((_, el) => loadedCheerio(el).text().includes('Yazar:'))
+      .text()
+      .replace('Yazar:', '')
+      .trim();
+
+    // Durum
+    const statusText = loadedCheerio('.detail-meta-row')
+      .filter((_, el) => loadedCheerio(el).find('.detail-meta-row__label').text().includes('Yayın'))
+      .find('.chip')
+      .first()
+      .text()
+      .trim();
+    const status = statusText.toLowerCase().includes('tamamland') ? 'Completed' : 'Ongoing';
+
+    // Türler
+    const genres = loadedCheerio('.detail-meta-row')
+      .filter((_, el) => loadedCheerio(el).find('.detail-meta-row__label').text().includes('Tür'))
+      .find('a')
+      .map((_, el) => loadedCheerio(el).text().trim())
+      .get()
+      .join(', ');
+
+    // Bölüm slug'ını URL'den çıkar
+    // novelPath: "manga-infinite-mana-in-the-apocalypse.html"
+    const slug = novelPath.replace('manga-', '').replace('.html', '');
+
+    // Bölümleri AJAX ile çek
+    const chaptersUrl = `${this.site}cek/fetch_pages_manga.php?manga_cek=${slug}`;
+    const chaptersBody = await fetchApi(chaptersUrl).then(r => r.text());
+    const $ch = parseHTML(chaptersBody);
 
     const chapters: Plugin.ChapterItem[] = [];
-    const title = novelPath.split('.html')[0].slice(6);
-    const url = `${this.site}cek/fetch_pages_manga.php?manga_cek=${title}`;
 
-    const response = await fetchApi(url, { ...this.opts, body: 'page=1' });
-    const page1 = parseHTML(await response.text());
-    const firstPage = 1;
-    const lastPage = parseInt(page1('a[title="Last"]').first().attr('data-page') ?? '1');
+    // Sayfa sayısını bul
+    const lastPage = parseInt($ch('a[title="Last"]').first().attr('data-page') ?? '1');
 
-    let pageDatas = await Promise.all(
-      Array.from({ length: lastPage - firstPage }, (_, i) =>
-        fetchApi(url, { ...this.opts, body: `page=${firstPage + i + 1}` }).then(r => r.text())
-      )
-    ).then(pages => pages.map(p => parseHTML(p)));
+    // İlk sayfa bölümlerini parse et
+    this.parseChapterPage($ch, chapters);
 
-    pageDatas = [page1, ...pageDatas];
-
-    const novelTitle = novel.name.toLocaleLowerCase().replace(/\([0-9]+\)/g, '').trim();
-
-    for (const page of pageDatas) {
-      page('body > ul > table > tbody > tr').each((_, el) => {
-        const chap = page(el);
-        const chapTitle1 = chap.find('td:nth-child(1) > a').text();
-        const updatedChapTitle1 = chapTitle1.toLocaleLowerCase().replace(novelTitle, 'Ch').trim();
-        const chapTitle2 = chap.find('td:nth-child(1) > div').text();
-        const chapPath = chap.find('td:nth-child(1) > a').attr('href') ?? '';
-        if (chapPath === '') return;
-        chapters.push({
-          name: chapTitle2 !== '' ? `${updatedChapTitle1}: ${chapTitle2}` : updatedChapTitle1,
-          path: chapPath,
-          chapterNumber: parseFloat(chapTitle1.replace(/[^0-9.]/g, '')),
-        });
-      });
+    // Diğer sayfaları çek
+    if (lastPage > 1) {
+      const otherPages = await Promise.all(
+        Array.from({ length: lastPage - 1 }, (_, i) =>
+          fetchApi(chaptersUrl, { ...this.opts, body: `page=${i + 2}` })
+            .then(r => r.text())
+            .then(html => parseHTML(html))
+        )
+      );
+      for (const $page of otherPages) {
+        this.parseChapterPage($page, chapters);
+      }
     }
 
-    if (chapters.length > 0) novel.chapters = chapters.reverse();
-    return novel;
+    return {
+      path: novelPath,
+      name,
+      cover,
+      summary,
+      author,
+      status,
+      genres,
+      chapters: chapters.reverse(),
+    };
+  }
+
+  private parseChapterPage($: CheerioAPI, chapters: Plugin.ChapterItem[]) {
+    $('body > ul > table > tbody > tr, ul > table > tbody > tr, table tr').each((_, el) => {
+      const row = $(el);
+      const link = row.find('td:first-child a').first();
+      const href = link.attr('href') || '';
+      if (!href) return;
+
+      const chapTitle = link.text().trim();
+      const chapNum = parseFloat(chapTitle.replace(/[^0-9.]/g, '')) || chapters.length;
+
+      chapters.push({
+        name: chapTitle || `Bölüm ${chapNum}`,
+        path: href,
+        chapterNumber: chapNum,
+      });
+    });
   }
 
   async popularNovels(
@@ -105,9 +148,7 @@ class MangaTR implements Plugin.PluginBase {
         const name = titleLink.text().trim();
         const path = titleLink.attr('href') ?? '';
         const cover = item.find('img.media-card__cover').attr('src') ?? '';
-        if (name && path) {
-          novels.push({ name, path, cover });
-        }
+        if (name && path) novels.push({ name, path, cover });
       });
 
       return novels;
@@ -117,42 +158,29 @@ class MangaTR implements Plugin.PluginBase {
   async parseChapter(chapterPath: string): Promise<string> {
     const body = await fetchApi(this.site + chapterPath).then(r => r.text());
     const loadedCheerio = parseHTML(body);
-    return loadedCheerio('#well').html() ?? '';
+    return loadedCheerio('#well, .chapter-content, .icerik').html() ?? '';
   }
 
   async searchNovels(searchTerm: string, pageNo: number): Promise<Plugin.NovelItem[]> {
     const ITEMS_PER_PAGE = 50;
     const url = `${this.site}arama.html?icerik=${encodeURIComponent(searchTerm)}`;
 
-    return fetchApi(url).then(r => r.text()).then(async body => {
+    return fetchApi(url).then(r => r.text()).then(body => {
       const loadedCheerio = parseHTML(body);
       const novels: Plugin.NovelItem[] = [];
-      let curr = 0;
 
-      for (const el of loadedCheerio('div.char > a + span').toArray()) {
-        if (novels.length === ITEMS_PER_PAGE) break;
-        const typeText = loadedCheerio(el).text().trim().toLowerCase();
-        const nextText = loadedCheerio(el).next().text().trim().toLowerCase();
-        if (typeText !== 'novel' && nextText !== 'novel') continue;
-        if ((pageNo - 1) * ITEMS_PER_PAGE > curr) { curr++; continue; }
-        const novelCheerio = loadedCheerio(el).prev();
-        const mangaSlug = novelCheerio.attr('manga-slug') ?? '';
-        novels.push({
-          name: novelCheerio.text(),
-          path: novelCheerio.attr('href') ?? '',
-          cover: mangaSlug,
-        });
-      }
+      loadedCheerio('div.media-card').each((_, el) => {
+        const item = loadedCheerio(el);
+        const badge = item.find('.media-card__badge').text().trim().toLowerCase();
+        if (badge !== 'novel') return;
+        const titleLink = item.find('a.media-card__title');
+        const name = titleLink.text().trim();
+        const path = titleLink.attr('href') ?? '';
+        const cover = item.find('img.media-card__cover').attr('src') ?? '';
+        if (name && path) novels.push({ name, path, cover });
+      });
 
-      return await Promise.all(novels.map(async novel => {
-        const response = await fetchApi(`${this.site}app/manga/controllers/cont.pop.php`, {
-          ...this.opts,
-          body: `slug=${novel.cover}`,
-        });
-        const imgCheerio = parseHTML(await response.text());
-        novel.cover = imgCheerio('img').first().attr('src') ?? '';
-        return novel;
-      }));
+      return novels.slice(0, ITEMS_PER_PAGE);
     });
   }
 
