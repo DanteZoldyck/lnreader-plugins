@@ -8,7 +8,7 @@ class MangaTR implements Plugin.PluginBase {
   name = 'MangaTR';
   icon = 'src/tr/mangatr/icon.png';
   site = 'https://manga-tr.com/';
-  version = '1.0.4';
+  version = '1.0.5';
 
   opts = {
     method: 'POST' as const,
@@ -29,7 +29,6 @@ class MangaTR implements Plugin.PluginBase {
       status: loadedCheerio('#tab1 > table:nth-child(2) > tbody > tr:nth-child(2) > td:nth-last-child(2) > a').text(),
       chapters: [],
       author: loadedCheerio('#tab1 > table:nth-child(3) > tbody > tr:nth-child(2) > td:nth-child(1) > a').map((i, el) => loadedCheerio(el).text()).get().join(','),
-      artist: loadedCheerio('#tab1 > table:nth-child(3) > tbody > tr:nth-child(2) > td:nth-child(2) > a').map((i, el) => loadedCheerio(el).text()).get().join(','),
       genres: loadedCheerio('#tab1 > table:nth-child(3) > tbody > tr:nth-child(2) > td:nth-child(3) > a').map((i, el) => loadedCheerio(el).text()).get().join(','),
     };
 
@@ -99,13 +98,13 @@ class MangaTR implements Plugin.PluginBase {
       const loadedCheerio = parseHTML(body);
       const novels: Plugin.NovelItem[] = [];
 
-      loadedCheerio('div.col-md-12, .manga-item').each((_, el) => {
+      loadedCheerio('.archive-item, .serie-item, article').each((_, el) => {
         const item = loadedCheerio(el);
-        const link = item.find('a[href*="manga-"]').first();
-        const name = item.find('#tables, .title, h5').first().text().trim() || link.text().trim();
+        const link = item.find('a').first();
+        const name = item.find('h2, h3, .title').first().text().trim() || link.attr('title') || '';
         const path = link.attr('href') ?? '';
         const cover = item.find('img').first().attr('src') ?? '';
-        if (name && path) {
+        if (name && path && path.includes('manga-')) {
           novels.push({ name, path, cover });
         }
       });
