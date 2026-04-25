@@ -8,18 +8,18 @@ class MangaTR implements Plugin.PluginBase {
   name = 'MangaTR';
   icon = 'src/tr/mangatr/icon.png';
   site = 'https://manga-tr.com/';
-  version = '1.0.9';
-
-  private ajaxHeaders = {
-    'Content-Type': 'application/x-www-form-urlencoded',
-    'x-requested-with': 'XMLHttpRequest',
-    'Referer': 'https://manga-tr.com/',
-    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
-  };
+  version = '1.1.0';
 
   async parseNovel(novelPath: string): Promise<Plugin.SourceNovel> {
     const url = this.site + novelPath;
-    const body = await fetchApi(url).then(r => r.text());
+
+    // Önce manga sayfasını yükle (cookie için)
+    const body = await fetchApi(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
+        'Accept': 'text/html,application/xhtml+xml',
+      }
+    }).then(r => r.text());
     const $ = parseHTML(body);
 
     const name = $('h1').first().text().replace(/\(\d+\)/, '').trim() ||
@@ -37,30 +37,35 @@ class MangaTR implements Plugin.PluginBase {
       .filter((_, el) => $(el).find('.detail-meta-row__label').text().includes('Tür'))
       .find('a').map((_, el) => $(el).text().trim()).get().join(', ');
 
-    // slug çıkar: "manga-infinite-mana.html" -> "infinite-mana"
+    // slug: "manga-infinite-mana.html" -> "infinite-mana"
     const slug = novelPath.replace(/^manga-/, '').replace('.html', '');
     const chapUrl = `${this.site}cek/fetch_pages_manga.php?manga_cek=${slug}`;
 
-    // İlk sayfa - POST ile
-    const page1Html = await fetchApi(chapUrl, {
-      method: 'POST',
-      headers: this.ajaxHeaders,
-      body: 'page=1',
-    }).then(r => r.text());
+    const chapHeaders = {
+      'Referer': url,
+      'X-Requested-With': 'XMLHttpRequest',
+      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
+      'Accept': 'text/html, */*',
+    };
 
+    // GET ile chapter listesi
+    const page1Html = await fetchApi(chapUrl, { headers: chapHeaders }).then(r => r.text());
     const $p1 = parseHTML(page1Html);
     const lastPage = parseInt($p1('a[title="Last"]').first().attr('data-page') ?? '1');
 
     const chapters: Plugin.ChapterItem[] = [];
     this.parseChapterPage($p1, chapters);
 
-    // Diğer sayfalar
+    // Diğer sayfalar POST ile
     if (lastPage > 1) {
       const others = await Promise.all(
         Array.from({ length: lastPage - 1 }, (_, i) =>
           fetchApi(chapUrl, {
             method: 'POST',
-            headers: this.ajaxHeaders,
+            headers: {
+              ...chapHeaders,
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
             body: `page=${i + 2}`,
           }).then(r => r.text()).then(html => parseHTML(html))
         )
@@ -115,7 +120,6 @@ class MangaTR implements Plugin.PluginBase {
       params.append('sort', filters.sort.value.toString());
       params.append('sort_type', filters.sort_type.value.toString());
     }
-
     const url = `${this.site}manga-list-sayfala.html?${params.toString()}`;
     return fetchApi(url).then(r => r.text()).then(body => {
       const $ = parseHTML(body);
@@ -133,7 +137,12 @@ class MangaTR implements Plugin.PluginBase {
   }
 
   async parseChapter(chapterPath: string): Promise<string> {
-    const body = await fetchApi(this.site + chapterPath).then(r => r.text());
+    const body = await fetchApi(this.site + chapterPath, {
+      headers: {
+        'Referer': this.site,
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
+      }
+    }).then(r => r.text());
     const $ = parseHTML(body);
     return $('#well, .chapter-content, .icerik').html() ?? '';
   }
