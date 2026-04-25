@@ -8,18 +8,11 @@ class MangaTR implements Plugin.PluginBase {
   name = 'MangaTR';
   icon = 'src/tr/mangatr/icon.png';
   site = 'https://manga-tr.com/';
-  version = '1.1.0';
+  version = '1.1.1';
 
   async parseNovel(novelPath: string): Promise<Plugin.SourceNovel> {
     const url = this.site + novelPath;
-
-    // Önce manga sayfasını yükle (cookie için)
-    const body = await fetchApi(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
-        'Accept': 'text/html,application/xhtml+xml',
-      }
-    }).then(r => r.text());
+    const body = await fetchApi(url).then(r => r.text());
     const $ = parseHTML(body);
 
     const name = $('h1').first().text().replace(/\(\d+\)/, '').trim() ||
@@ -37,37 +30,34 @@ class MangaTR implements Plugin.PluginBase {
       .filter((_, el) => $(el).find('.detail-meta-row__label').text().includes('Tür'))
       .find('a').map((_, el) => $(el).text().trim()).get().join(', ');
 
-    // slug: "manga-infinite-mana.html" -> "infinite-mana"
     const slug = novelPath.replace(/^manga-/, '').replace('.html', '');
     const chapUrl = `${this.site}cek/fetch_pages_manga.php?manga_cek=${slug}`;
 
-    const chapHeaders = {
+    const headers = {
       'Referer': url,
       'X-Requested-With': 'XMLHttpRequest',
       'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
-      'Accept': 'text/html, */*',
     };
 
-    // GET ile chapter listesi
-    const page1Html = await fetchApi(chapUrl, { headers: chapHeaders }).then(r => r.text());
+    // İlk sayfa
+    const page1Html = await fetchApi(`${chapUrl}&page=1`, { headers }).then(r => r.text());
     const $p1 = parseHTML(page1Html);
-    const lastPage = parseInt($p1('a[title="Last"]').first().attr('data-page') ?? '1');
+
+    // Son sayfayı bul - "Son" linkinin data-page değeri
+    const lastPage = parseInt(
+      $p1('.pagination-link').last().attr('data-page') ?? '1'
+    );
 
     const chapters: Plugin.ChapterItem[] = [];
     this.parseChapterPage($p1, chapters);
 
-    // Diğer sayfalar POST ile
+    // Diğer sayfalar
     if (lastPage > 1) {
       const others = await Promise.all(
         Array.from({ length: lastPage - 1 }, (_, i) =>
-          fetchApi(chapUrl, {
-            method: 'POST',
-            headers: {
-              ...chapHeaders,
-              'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            body: `page=${i + 2}`,
-          }).then(r => r.text()).then(html => parseHTML(html))
+          fetchApi(`${chapUrl}&page=${i + 2}`, { headers })
+            .then(r => r.text())
+            .then(html => parseHTML(html))
         )
       );
       for (const $page of others) {
@@ -88,15 +78,19 @@ class MangaTR implements Plugin.PluginBase {
   }
 
   private parseChapterPage($: CheerioAPI, chapters: Plugin.ChapterItem[]) {
-    $('table tr').each((_, el) => {
-      const row = $(el);
-      const link = row.find('td:first-child a').first();
+    $('article.chapter-card').each((_, el) => {
+      const card = $(el);
+      const link = card.find('a.chapter-card__row').first();
       const href = link.attr('href') || '';
       if (!href) return;
-      const chapTitle = link.text().trim();
-      const chapNum = parseFloat(chapTitle.replace(/[^0-9.]/g, '')) || chapters.length + 1;
+
+      const numText = card.find('.chapter-number').text().replace('.', '').trim();
+      const chapNum = parseFloat(numText) || chapters.length + 1;
+      const subtitle = card.find('.chapter-card__subtitle').text().trim();
+      const chapTitle = `${chapNum}. Bölüm${subtitle ? ' - ' + subtitle : ''}`;
+
       chapters.push({
-        name: chapTitle || `Bölüm ${chapNum}`,
+        name: chapTitle,
         path: href,
         chapterNumber: chapNum,
       });
@@ -137,12 +131,7 @@ class MangaTR implements Plugin.PluginBase {
   }
 
   async parseChapter(chapterPath: string): Promise<string> {
-    const body = await fetchApi(this.site + chapterPath, {
-      headers: {
-        'Referer': this.site,
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
-      }
-    }).then(r => r.text());
+    const body = await fetchApi(this.site + chapterPath).then(r => r.text());
     const $ = parseHTML(body);
     return $('#well, .chapter-content, .icerik').html() ?? '';
   }
